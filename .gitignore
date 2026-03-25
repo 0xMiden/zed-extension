@@ -22,4 +22,4 @@ target/
 
 grammars/
 
-*.wasm
+**/*.wasm

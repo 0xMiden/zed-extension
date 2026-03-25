@@ -1,14 +1,29 @@
-use zed_extension_api::{self as zed, CodeLabel, CodeLabelSpan};
+use zed_extension_api::{self as zed, settings::LspSettings, LanguageServerId, Result};
 
-pub struct MidenExtension {
+const SERVER_NAME: &str = "miden-lsp";
+
+struct MidenExtension {
     cached_binary_path: Option<String>,
 }
 
+impl MidenExtension {
+    fn command_from_path(
+        &mut self,
+        path: String,
+        args: Vec<String>,
+        env: zed::EnvVars,
+    ) -> zed::Command {
+        self.cached_binary_path = Some(path.clone());
+        zed::Command {
+            command: path,
+            args,
+            env,
+        }
+    }
+}
+
 impl zed::Extension for MidenExtension {
-    fn new() -> Self
-    where
-        Self: Sized,
-    {
+    fn new() -> Self {
         Self {
             cached_binary_path: None,
         }
@@ -16,83 +31,61 @@ impl zed::Extension for MidenExtension {
 
     fn language_server_command(
         &mut self,
-        _language_server_id: &zed::LanguageServerId,
+        language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
-    ) -> zed::Result<zed::Command> {
-        let command = self
-            .cached_binary_path
+    ) -> Result<zed::Command> {
+        if language_server_id.as_ref() != SERVER_NAME {
+            return Err(format!("unknown language server ID {}", language_server_id.as_ref()));
+        }
+
+        let binary_settings = LspSettings::for_worktree(SERVER_NAME, worktree)
+            .ok()
+            .and_then(|lsp_settings| lsp_settings.binary);
+        let args = binary_settings
             .as_ref()
-            .and_then(|path| {
-                if std::fs::metadata(path).is_ok_and(|stat| stat.is_file()) {
-                    Some(path.clone())
-                } else {
-                    None
-                }
-            })
-            .or_else(|| worktree.which("miden-lsp"))
-            .ok_or_else(|| "could not find 'miden' executable in $PATH".to_string())?;
-
-        if self.cached_binary_path.is_none() {
-            self.cached_binary_path = Some(command.clone());
-        }
-
+            .and_then(|binary| binary.arguments.clone())
+            .unwrap_or_default();
         let env = worktree.shell_env();
-        Ok(zed::Command {
-            command,
-            //args: vec!["lsp".to_string()],
-            args: vec![],
-            env,
-        })
-    }
 
-    fn label_for_completion(
-        &self,
-        _language_server_id: &zed::LanguageServerId,
-        completion: zed::lsp::Completion,
-    ) -> Option<zed::CodeLabel> {
-        use zed::lsp::CompletionKind;
-
-        let name = completion.label;
-        let kind = completion.kind?;
-
-        match kind {
-            CompletionKind::Function | CompletionKind::Method | CompletionKind::Module => {
-                Some(CodeLabel {
-                    spans: vec![CodeLabelSpan::code_range(0..name.len())],
-                    filter_range: (0..name.len()).into(),
-                    code: name,
-                })
-            }
-            _ => None,
+        if let Some(path) = binary_settings.and_then(|binary| binary.path) {
+            return Ok(self.command_from_path(path, args, env));
         }
+
+        if let Some(path) = self.cached_binary_path.clone() {
+            return Ok(zed::Command {
+                command: path,
+                args,
+                env,
+            });
+        }
+
+        if let Some(path) = worktree.which(SERVER_NAME) {
+            return Ok(self.command_from_path(path, args, env));
+        }
+
+        Err(
+            "miden-lsp was not found in PATH; configure lsp.binary.path or install miden-lsp"
+                .to_string(),
+        )
     }
 
-    /*
-    fn get_dap_binary(
+    fn language_server_workspace_configuration(
         &mut self,
-        adapter_name: String,
-        config: DebugTaskDefinition,
-        user_provided_debug_adapter_path: Option<String>,
-        worktree: &Worktree,
-    ) -> Result<DebugAdapterBinary, String> {
-        todo!()
+        server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        LspSettings::for_worktree(server_id.as_ref(), worktree)
+            .map(|lsp_settings| lsp_settings.settings)
     }
 
-    fn dap_request_kind(
+    fn language_server_initialization_options(
         &mut self,
-        _adapter_name: String,
-        _config: Value,
-    ) -> Result<StartDebuggingRequestArgumentsRequest, String> {
-        todo!()
+        server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        LspSettings::for_worktree(server_id.as_ref(), worktree)
+            .map(|lsp_settings| lsp_settings.initialization_options)
     }
-
-    fn dap_config_to_scenario(
-        &mut self,
-        _adapter_name: DebugConfig,
-    ) -> Result<DebugScenario, String> {
-        todo!()
-    }
-     */
 }
 
 zed::register_extension!(MidenExtension);

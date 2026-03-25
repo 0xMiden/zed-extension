@@ -1,16 +1,20 @@
-# Zed Extension for Miden
+# Miden Extension for Zed
 
-This repo contains the source for the extension which provides native support
-in [Zed](https://zed.dev) for Miden projects:
+Zed extension for Miden Assembly based on `tree-sitter-masm` and `miden-lsp`.
 
-* Language Server (LSP) support for Miden Assembly
-* Debug Adapter Protocol (DAP) support for Miden Assembly and Rust-based Miden projects
+## Current Assumptions
 
-## Development
+- `miden-lsp` is already available via `PATH`, or configured through Zed's
+  `lsp.binary.path` override for `miden-lsp`
+- grammar metadata is pinned to the same `tree-sitter-masm` lineage used by this repo
 
-To install this extension for local development, you should clone this repo, and then
-use the _Install Dev Extension_ in Zed's extensions page.
+## Local Development
 
-## Related Projects
+Install the extension in Zed with `Install Dev Extension` from the Extensions page,
+or by running the `zed: install dev extension` action and selecting this directory.
 
-This builds on the official tree-sitter grammar for Miden Assembly, which you can find [here](https://github.com/0xMiden/tree-sitter-masm).
+## Layout
+
+- `extension.toml`: Zed extension metadata, grammar registration, and language-server registration
+- `src/lib.rs`: Zed extension entrypoint and `miden-lsp` launcher
+- `languages/masm/`: Zed language config and tree-sitter query files

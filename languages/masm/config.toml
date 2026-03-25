@@ -1,7 +1,14 @@
 name = "Miden Assembly"
 grammar = "masm"
 path_suffixes = ["masm"]
-line_comments = ["#", "#!"]
-word_characters = ["$"]
-
-#debuggers = ["masm"]
+line_comments = ["# "]
+tab_size = 4
+hard_tabs = false
+autoclose_before = ";:.,=})]"
+word_characters = ["$", ":"]
+brackets = [
+    { start = "(", end = ")", close = true, newline = false },
+    { start = "[", end = "]", close = true, newline = false },
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "\"", end = "\"", close = true, newline = false, not_in = ["comment", "string"] },
+]

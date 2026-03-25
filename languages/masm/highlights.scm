@@ -1,39 +1,48 @@
-(moduledoc) @comment.doc
-
 (doc_comment) @comment.doc
 
-(comment)+ @comment
+(comment) @comment
+
+(visibility) @keyword
+(primitive_type) @type.builtin
+(int_type) @type.builtin
+(address_space) @type.builtin
 
 [
   "use"
-  "export"
-  "proc"
   "const"
+  "adv_map"
   "begin"
   "end"
-  "if.true"
+  "proc"
+  "type"
+  "enum"
+  "struct"
+  "if"
   "else"
-  "while.true"
+  "while"
   "repeat"
-  "adv.insert_hdword"
-  "adv.insert_hdword_d"
-  "adv.insert_hperm"
-  "adv.insert_mem"
-  "adv.push_ext2intt"
-  "adv.push_mapval"
-  "adv.push_mapvaln"
-  "adv.push_mtnode"
-  "adv.push_smtpeek"
-  "adv.push_u64div"
-  "adv.push_falcon_div"
+  "true"
+  "false"
+  "adv"
+  "insert_hdword"
+  "insert_hdword_d"
+  "insert_hqword"
+  "insert_hperm"
+  "insert_mem"
+  "push_mapval"
+  "push_mapval_count"
+  "push_mapvaln"
+  "has_mapkey"
+  "push_mtnode"
   "adv_pipe"
   "adv_loadw"
   "and"
-  "arithmetic_circuit_eval"
+  "eval_circuit"
   "caller"
   "cdrop"
   "cdropw"
   "clk"
+  "crypto_stream"
   "cswap"
   "cswapw"
   "drop"
@@ -66,11 +75,15 @@
   "pow2"
   "horner_eval_base"
   "horner_eval_ext"
+  "log_precompile"
+  "reversew"
+  "reversedw"
   "sdepth"
   "swapdw"
   "u32cast"
   "u32overflowing_add3"
-  "u32overflowing_madd"
+  "u32widening_add3"
+  "u32widening_madd"
   "u32popcnt"
   "u32clz"
   "u32ctz"
@@ -87,63 +100,71 @@
   "mul"
   "div"
   "eq"
-  "exp.u"
   "exp"
-  "gte"
+  "exp.u"
   "gt"
-  "lte"
+  "gte"
   "lt"
+  "lte"
   "neq"
-  "u32and"
   "u32div"
   "u32divmod"
-  "u32gt"
-  "u32gte"
-  "u32lt"
-  "u32lte"
-  "u32max"
-  "u32min"
   "u32mod"
+  "u32and"
   "u32or"
-  "u32overflowing_add"
-  "u32overflowing_sub"
-  "u32overflowing_mul"
   "u32xor"
   "u32not"
+  "u32wrapping_add"
+  "u32wrapping_sub"
+  "u32wrapping_mul"
+  "u32overflowing_add"
+  "u32widening_add"
+  "u32overflowing_sub"
+  "u32widening_mul"
   "u32shl"
   "u32shr"
   "u32rotl"
   "u32rotr"
-  "u32wrapping_add"
-  "u32wrapping_mul"
-  "u32wrapping_sub"
-  "adv_push"
-  "dupw"
-  "dup"
-  "movdnw"
-  "movdn"
-  "movupw"
-  "movup"
-  "swapw"
-  "swap"
+  "u32lt"
+  "u32lte"
+  "u32gt"
+  "u32gte"
+  "u32min"
+  "u32max"
+  "mem_load"
+  "mem_loadw"
+  "mem_loadw_be"
+  "mem_loadw_le"
+  "mem_store"
+  "mem_storew"
+  "mem_storew_be"
+  "mem_storew_le"
   "locaddr"
   "loc_load"
   "loc_loadw"
+  "loc_loadw_be"
+  "loc_loadw_le"
   "loc_store"
   "loc_storew"
-  "mem_load"
-  "mem_loadw"
-  "mem_store"
-  "mem_storew"
-  "assert_eqw"
-  "assert_eq"
-  "assertz"
+  "loc_storew_be"
+  "loc_storew_le"
+  "adv_push"
+  "dup"
+  "dupw"
+  "movdn"
+  "movdnw"
+  "movup"
+  "movupw"
+  "swap"
+  "swapw"
   "assert"
+  "assertz"
+  "assert_eq"
+  "assert_eqw"
+  "u32assert"
   "u32assert2"
   "u32assertw"
-  "u32assert"
   "mtree_verify"
-  "breakpoint"
   "debug"
   "emit"
   "trace"
@@ -152,54 +173,65 @@
   "call"
   "syscall"
   "procref"
-  "nop"
+  "event"
+  "err"
 ] @keyword
-
-(import
-  path: (path [
-    (relative_path ([(identifier) (string)] "::")* [(identifier) (string)] @module)
-    (absolute_path ([(identifier) (string)] "::")* [(identifier) (string)] @module)
-  ])
-  !alias)
-
-(import_alias name: (identifier) @module)
 
 (const_ident) @constant
 
-(procedure name: (identifier) @function)
+(type_alias
+  name: (identifier) @type)
+
+(enum_declaration
+  name: (identifier) @type)
+
+(struct_field
+  name: (identifier) @property)
+
+(function_param
+  name: (identifier) @parameter)
+
+(function_result
+  name: (identifier) @parameter)
+
+(annotation
+  name: (identifier) @attribute)
+
+(meta_key_value
+  name: (identifier) @property)
+
+(import_alias
+  name: (identifier) @module)
+
+(import_alias
+  name: (quoted_ident) @module)
+
+(procedure
+  name: (procedure_name
+    (identifier) @function))
+
+(procedure
+  name: (procedure_name
+    (quoted_ident) @function))
 
 (entrypoint) @function
 
-(annotation
-  "@" @attribute
-  name: (identifier) @attribute)
-
-(meta_key_value name: [(identifier) (string)] @property)
+((identifier) @string.special.symbol
+  (#match? @string.special.symbol "^[$](exec|kernel)$"))
 
 (identifier) @function.method
 
-((identifier) @string.special.symbol
-  (#match? @string.special.symbol "[$](exec|kernel|sys|anon)"))
-
-(invoke
-  path: (path [
-    (relative_path ([(identifier) (string)] "::")* [(identifier) (string)] @function)
-    (absolute_path ([(identifier) (string)] "::")* [(identifier) (string)] @function)
-  ]))
-
-(assert
-  err: ("err" @keyword))
-
-(debug "." ["stack" "mem" "local" "adv_stack"] @keyword)
-
 [
-  (number)
   (integer)
   (decimal)
   (hex)
+  (hex_word)
+  (binary)
+  (word)
 ] @number
 
 (string) @string
+(quoted_ident) @string
 
 [
   "+"
@@ -214,6 +246,10 @@
 [
   "."
   "::"
+  ","
+  ";"
+  ":"
+  ".."
 ] @punctuation.delimiter
 
 [
@@ -226,4 +262,8 @@
   "]"
   "("
   ")"
+  "{"
+  "}"
+  "<"
+  ">"
 ] @punctuation.bracket

@@ -4,6 +4,7 @@
 (entrypoint
   body: (block) @function.inside) @function.around
 
-(moduledoc (doc_comment_line)+ @comment.inside)
-(doc_comment) @comment.around
-(comment)+ @comment.around
+(doc_comment
+  (doc_comment_line)+ @comment.inside) @comment.around
+
+(comment) @comment.around
