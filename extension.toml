@@ -14,10 +14,5 @@ commit = "3dfc7c1f687a0a287afe3b1c01ff7be6f0a42241"
 name = "miden-lsp"
 languages = ["Miden Assembly"]
 
-#[debug_adapters.miden-lsp]
-# Optional relative path to the JSON schema for the debug adapter configuration schema
-# Defaults to `debug_adapter_schemas/$DEBUG_ADAPTER_NAME_ID.json`
-# Note that while this field is optional, a schema is mandatory
-#schema_path = "dap/schema.json"
-
-#[debug_locators.masm-program]
+[debug_adapters.miden]
+schema_path = "dap/schema.json"

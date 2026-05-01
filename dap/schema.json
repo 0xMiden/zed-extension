@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Miden Debug Configuration",
+  "description": "Configuration for the Miden VM DAP debug adapter exposed by `miden-client exec --start-debug-adapter`.",
+  "type": "object",
+  "required": ["request"],
+  "properties": {
+    "request": {
+      "type": "string",
+      "enum": ["launch", "attach"],
+      "description": "`launch` spawns `miden-client` and connects; `attach` connects to a server you started yourself."
+    },
+    "host": {
+      "type": "string",
+      "default": "127.0.0.1",
+      "description": "DAP server host (both modes)."
+    },
+    "port": {
+      "type": "integer",
+      "default": 4711,
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "DAP server port (both modes)."
+    },
+    "scriptPath": {
+      "type": "string",
+      "description": "Absolute path to the `.masm` script to debug (launch only)."
+    },
+    "midenClientPath": {
+      "type": "string",
+      "default": "miden-client",
+      "description": "Path to the `miden-client` binary (launch only). When omitted, `miden-client` is resolved from `$PATH`."
+    },
+    "pythonPath": {
+      "type": "string",
+      "default": "python3",
+      "description": "Path to Python 3 used by the Zed stdio proxy. When omitted, `python3` is resolved from `$PATH`."
+    },
+    "accountId": {
+      "type": "string",
+      "description": "Account ID for execution (launch only, optional)."
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Working directory (must be an initialized miden-client directory; launch only). Defaults to the worktree root."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "request": { "const": "launch" } } },
+      "then": { "required": ["scriptPath"] }
+    }
+  ]
+}
