@@ -4,7 +4,11 @@ use zed_extension_api::{
     StartDebuggingRequestArgumentsRequest, resolve_tcp_template, settings::LspSettings,
 };
 
-use std::net::Ipv4Addr;
+use std::{
+    collections::BTreeSet,
+    net::Ipv4Addr,
+    path::{Component, Path, PathBuf},
+};
 
 const SERVER_NAME: &str = "miden-lsp";
 const ADAPTER_NAME: &str = "miden";
@@ -194,6 +198,8 @@ def normalize_server_message(body, state):
                     state["source_path"] = source_path
                     state["source_name"] = source_name(source_path)
                     break
+        log("dropping miden/uiState event; Zed only consumes standard DAP messages")
+        return None
 
     if isinstance(message, dict) and message.get("type") == "response" and message.get("command") == "stackTrace":
         response_body = message.get("body")
@@ -248,6 +254,8 @@ def copy_server_to_client(sock, state):
                 return
             log("server -> client " + describe_message(body))
             body = normalize_server_message(body, state)
+            if body is None:
+                continue
             write_frame_to_stdout(body)
     except Exception as error:
         log("server-to-client proxy stopped: %s" % error)
@@ -404,15 +412,17 @@ impl zed::Extension for MidenExtension {
     // -------------------------------------------------------------------------
     // Debug Adapter Protocol
     //
-    // The Miden DAP server is exposed by `miden-client exec --start-debug-adapter
-    // <host>:<port>` over TCP. Zed talks stdio to a Python proxy so we can keep
-    // Zed's DAP transport stable while adapting server quirks at the boundary.
+    // The Miden DAP server is exposed over TCP. Zed talks stdio to a Python
+    // proxy so we can keep Zed's DAP transport stable while adapting server
+    // quirks at the boundary.
     // Two flows:
-    //   - launch: the proxy spawns `miden-client` and connects to its listener.
+    //   - launch: the proxy spawns `miden-client` for transaction scripts or
+    //     `miden-debug` for standalone programs, then connects to its listener.
     //   - attach: the user starts the server; the proxy connects to it.
     //
-    // The proxy only normalizes Miden's spec-style no-body `initialized` event
-    // into the shape Zed 1.1.x's dap-types decoder accepts.
+    // The proxy normalizes transport/UI compatibility details only. It leaves
+    // DAP scopes and variables unchanged so Zed sees the `Local Variables`,
+    // `Operand Stack`, and `Memory` scopes emitted by miden-debug.
     // -------------------------------------------------------------------------
 
     fn dap_request_kind(
@@ -423,6 +433,7 @@ impl zed::Extension for MidenExtension {
         if adapter_name != ADAPTER_NAME {
             return Err(format!("unknown debug adapter ID {adapter_name}"));
         }
+        let config = debug_config_value(&config);
         match config
             .get("request")
             .and_then(zed::serde_json::Value::as_str)
@@ -430,9 +441,9 @@ impl zed::Extension for MidenExtension {
             Some("attach") => Ok(StartDebuggingRequestArgumentsRequest::Attach),
             Some("launch") => Ok(StartDebuggingRequestArgumentsRequest::Launch),
             Some(other) => Err(format!("unknown `request` kind: {other}")),
-            // Heuristic when `request` is omitted: a configured `scriptPath`
+            // Heuristic when `request` is omitted: a configured program path
             // implies launch, otherwise attach to a server the user started.
-            None if config.get("scriptPath").is_some() => {
+            None if config.get("scriptPath").is_some() || config.get("programPath").is_some() => {
                 Ok(StartDebuggingRequestArgumentsRequest::Launch)
             }
             None => Ok(StartDebuggingRequestArgumentsRequest::Attach),
@@ -452,7 +463,8 @@ impl zed::Extension for MidenExtension {
 
         let raw: zed::serde_json::Value = zed::serde_json::from_str(&config.config)
             .map_err(|err| format!("invalid Miden debug config JSON: {err}"))?;
-        let parsed = MidenDebugConfig::from_json(&raw);
+        let raw_config = debug_config_value(&raw);
+        let parsed = MidenDebugConfig::from_json(raw_config);
 
         let (host_str, port, timeout_ms) = if let Some(tcp_template) = config.tcp_connection {
             let tcp = resolve_tcp_template(tcp_template)
@@ -472,7 +484,7 @@ impl zed::Extension for MidenExtension {
             (host_str, port, DEFAULT_TCP_TIMEOUT_MS)
         };
 
-        let request_kind = self.dap_request_kind(ADAPTER_NAME.to_string(), raw)?;
+        let request_kind = self.dap_request_kind(ADAPTER_NAME.to_string(), raw_config.clone())?;
 
         let proxy_python = parsed
             .python_path
@@ -480,34 +492,124 @@ impl zed::Extension for MidenExtension {
             .or_else(|| worktree.which("python3"))
             .unwrap_or_else(|| "python3".to_string());
 
-        let proxy_cwd = parsed.cwd.clone().or_else(|| Some(worktree.root_path()));
+        let worktree_root = worktree.root_path();
+        let proxy_cwd = Some(resolve_config_path(
+            parsed.cwd.as_deref().unwrap_or("."),
+            &worktree_root,
+        ));
 
-        let mut ui_source_path = parsed.script_path.clone();
+        let mut ui_source_path = parsed
+            .program_path
+            .clone()
+            .or_else(|| parsed.script_path.clone());
         let adapter_argv = match request_kind {
             StartDebuggingRequestArgumentsRequest::Launch => {
-                let script_path = parsed
-                    .script_path
-                    .ok_or_else(|| "`scriptPath` is required for launch".to_string())?;
-                ui_source_path = Some(script_path.clone());
-                let miden_client = user_provided_debug_adapter_path
-                    .or(parsed.miden_client_path)
-                    .or_else(|| worktree.which("miden-client"))
-                    .unwrap_or_else(|| "miden-client".to_string());
+                let runtime = parsed.runtime.as_deref().unwrap_or_else(|| {
+                    if parsed.program_path.is_some() {
+                        "debugger"
+                    } else {
+                        "client"
+                    }
+                });
 
-                let mut args = vec![
-                    miden_client,
-                    "exec".to_string(),
-                    "--script-path".to_string(),
-                    script_path,
-                    "--start-debug-adapter".to_string(),
-                    format!("{host_str}:{port}"),
-                ];
-                if let Some(account_id) = parsed.account_id {
-                    args.push("--account".to_string());
-                    args.push(account_id);
+                match runtime {
+                    "client" | "miden-client" => {
+                        let script_path = parsed.script_path.clone().ok_or_else(|| {
+                            "`scriptPath` is required for client launch".to_string()
+                        })?;
+                        let script_path =
+                            resolve_config_path(&script_path, proxy_cwd.as_deref().unwrap());
+                        ui_source_path = Some(script_path.clone());
+                        let miden_client = user_provided_debug_adapter_path
+                            .or_else(|| parsed.miden_client_path.clone())
+                            .or_else(|| worktree.which("miden-client"))
+                            .unwrap_or_else(|| "miden-client".to_string());
+                        let miden_client =
+                            resolve_command_path(&miden_client, proxy_cwd.as_deref().unwrap());
+
+                        let mut args = vec![
+                            miden_client,
+                            "exec".to_string(),
+                            "--script-path".to_string(),
+                            script_path,
+                            "--start-debug-adapter".to_string(),
+                            format!("{host_str}:{port}"),
+                        ];
+                        if let Some(account_id) = parsed.account_id.clone() {
+                            args.push("--account".to_string());
+                            args.push(account_id);
+                        }
+
+                        Some(args)
+                    }
+                    "debugger" | "miden-debug" => {
+                        let program_path = parsed
+                            .program_path
+                            .clone()
+                            .or_else(|| parsed.script_path.clone())
+                            .ok_or_else(|| {
+                                "`programPath` is required for debugger launch".to_string()
+                            })?;
+                        let program_path =
+                            resolve_config_path(&program_path, proxy_cwd.as_deref().unwrap());
+                        ui_source_path = Some(program_path.clone());
+                        let miden_debug = user_provided_debug_adapter_path
+                            .or_else(|| parsed.miden_debug_path.clone())
+                            .or_else(|| worktree.which("miden-debug"))
+                            .unwrap_or_else(|| "miden-debug".to_string());
+                        let miden_debug =
+                            resolve_command_path(&miden_debug, proxy_cwd.as_deref().unwrap());
+
+                        let mut args = vec![
+                            miden_debug,
+                            "--start-debug-adapter".to_string(),
+                            format!("{host_str}:{port}"),
+                        ];
+                        if let Some(cwd) = proxy_cwd.as_deref() {
+                            args.push("--working-dir".to_string());
+                            args.push(cwd.to_string());
+                        }
+                        push_optional_path_arg(
+                            &mut args,
+                            "--inputs",
+                            parsed.inputs_path.clone(),
+                            proxy_cwd.as_deref().unwrap(),
+                        );
+                        push_optional_arg(&mut args, "--entrypoint", parsed.entrypoint.clone());
+                        push_optional_path_arg(
+                            &mut args,
+                            "--sysroot",
+                            parsed.sysroot.clone(),
+                            proxy_cwd.as_deref().unwrap(),
+                        );
+                        for search_path in &parsed.search_path {
+                            args.push("--search-path".to_string());
+                            args.push(resolve_config_path(
+                                search_path,
+                                proxy_cwd.as_deref().unwrap(),
+                            ));
+                        }
+                        for link_library in &parsed.link_libraries {
+                            args.push("--link-library".to_string());
+                            args.push(link_library.clone());
+                        }
+                        for prefix in
+                            parsed.source_path_prefixes(&program_path, proxy_cwd.as_deref())
+                        {
+                            args.push("--source-path-prefix".to_string());
+                            args.push(prefix);
+                        }
+
+                        args.push(program_path);
+                        if !parsed.program_args.is_empty() {
+                            args.push("--".to_string());
+                            args.extend(parsed.program_args.clone());
+                        }
+
+                        Some(args)
+                    }
+                    other => return Err(format!("unknown Miden launch runtime `{other}`")),
                 }
-
-                Some(args)
             }
             StartDebuggingRequestArgumentsRequest::Attach => None,
         };
@@ -541,7 +643,8 @@ impl zed::Extension for MidenExtension {
         let json_config = match &config.request {
             DebugRequest::Launch(launch) => zed::serde_json::json!({
                 "request": "launch",
-                "scriptPath": launch.program,
+                "runtime": "debugger",
+                "programPath": launch.program,
                 "cwd": launch.cwd,
                 "host": DEFAULT_HOST,
                 "port": DEFAULT_PORT,
@@ -565,31 +668,231 @@ impl zed::Extension for MidenExtension {
 
 #[derive(Default)]
 struct MidenDebugConfig {
+    runtime: Option<String>,
     host: Option<String>,
     port: Option<u16>,
     script_path: Option<String>,
+    program_path: Option<String>,
     miden_client_path: Option<String>,
+    miden_debug_path: Option<String>,
     python_path: Option<String>,
     account_id: Option<String>,
+    inputs_path: Option<String>,
+    entrypoint: Option<String>,
+    program_args: Vec<String>,
+    sysroot: Option<String>,
+    search_path: Vec<String>,
+    link_libraries: Vec<String>,
+    source_path_prefixes: Vec<String>,
+    trim_path_prefixes: Vec<String>,
+    compiler_args: Vec<String>,
+    midenc_args: Vec<String>,
+    build_args: Vec<String>,
+    cargo_miden_args: Vec<String>,
     cwd: Option<String>,
 }
 
 impl MidenDebugConfig {
     fn from_json(value: &zed::serde_json::Value) -> Self {
         let str_field = |k: &str| value.get(k).and_then(|v| v.as_str()).map(String::from);
+        let str_array_field = |k: &str| {
+            value
+                .get(k)
+                .and_then(zed::serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| match item {
+                            zed::serde_json::Value::String(value) => Some(value.clone()),
+                            zed::serde_json::Value::Number(value) => Some(value.to_string()),
+                            zed::serde_json::Value::Bool(value) => Some(value.to_string()),
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         Self {
+            runtime: str_field("runtime"),
             host: str_field("host"),
             port: value
                 .get("port")
                 .and_then(zed::serde_json::Value::as_u64)
                 .and_then(|n| u16::try_from(n).ok()),
             script_path: str_field("scriptPath"),
+            program_path: str_field("programPath"),
             miden_client_path: str_field("midenClientPath"),
+            miden_debug_path: str_field("midenDebugPath"),
             python_path: str_field("pythonPath"),
             account_id: str_field("accountId"),
+            inputs_path: str_field("inputsPath"),
+            entrypoint: str_field("entrypoint"),
+            program_args: str_array_field("programArgs"),
+            sysroot: str_field("sysroot"),
+            search_path: str_array_field("searchPath"),
+            link_libraries: str_array_field("linkLibraries"),
+            source_path_prefixes: str_array_field("sourcePathPrefixes"),
+            trim_path_prefixes: str_array_field("trimPathPrefixes"),
+            compiler_args: str_array_field("compilerArgs"),
+            midenc_args: str_array_field("midencArgs"),
+            build_args: str_array_field("buildArgs"),
+            cargo_miden_args: str_array_field("cargoMidenArgs"),
             cwd: str_field("cwd"),
         }
     }
+
+    fn source_path_prefixes(&self, program_path: &str, cwd: Option<&str>) -> Vec<String> {
+        let mut prefixes = BTreeSet::new();
+        let extracted_prefixes = self.extract_trim_path_prefixes();
+        for prefix in self
+            .source_path_prefixes
+            .iter()
+            .chain(self.trim_path_prefixes.iter())
+            .chain(extracted_prefixes.iter())
+        {
+            if let Some(path) = resolve_source_path_prefix(prefix, cwd) {
+                prefixes.insert(path);
+            }
+        }
+        if let Some(path) = infer_cargo_miden_package_root(program_path) {
+            prefixes.insert(path);
+        }
+        prefixes.into_iter().collect()
+    }
+
+    fn extract_trim_path_prefixes(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        args.extend(self.compiler_args.iter().cloned());
+        args.extend(self.midenc_args.iter().cloned());
+        args.extend(self.build_args.iter().cloned());
+        args.extend(self.cargo_miden_args.iter().cloned());
+
+        let mut prefixes = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "-Z" {
+                if let Some(next) = args.get(i + 1)
+                    && let Some(value) = next.strip_prefix("trim-path-prefix=")
+                {
+                    prefixes.push(value.to_string());
+                    i += 2;
+                    continue;
+                }
+            } else if let Some(value) = arg.strip_prefix("-Ztrim-path-prefix=") {
+                prefixes.push(value.to_string());
+            } else if (arg == "--trim-path-prefix" || arg == "--source-path-prefix")
+                && args.get(i + 1).is_some()
+            {
+                prefixes.push(args[i + 1].clone());
+                i += 2;
+                continue;
+            } else if let Some(value) = arg
+                .strip_prefix("--trim-path-prefix=")
+                .or_else(|| arg.strip_prefix("--source-path-prefix="))
+            {
+                prefixes.push(value.to_string());
+            }
+
+            i += 1;
+        }
+
+        prefixes
+    }
+}
+
+fn debug_config_value(value: &zed::serde_json::Value) -> &zed::serde_json::Value {
+    value
+        .get("config")
+        .filter(|config| config.is_object())
+        .unwrap_or(value)
+}
+
+fn resolve_source_path_prefix(prefix: &str, cwd: Option<&str>) -> Option<String> {
+    if prefix.is_empty() {
+        return None;
+    }
+    let path = Path::new(prefix);
+    if path.is_absolute() {
+        Some(
+            normalize_path(PathBuf::from(path))
+                .to_string_lossy()
+                .to_string(),
+        )
+    } else {
+        Some(resolve_config_path(prefix, cwd?))
+    }
+}
+
+fn infer_cargo_miden_package_root(program_path: &str) -> Option<String> {
+    let normalized = Path::new(program_path);
+    let components = normalized
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+
+    let target_index = components
+        .windows(2)
+        .position(|window| window[0] == "target" && window[1] == "miden")?;
+    if target_index == 0 {
+        return None;
+    }
+
+    let mut root = PathBuf::new();
+    for component in &components[..target_index] {
+        root.push(component);
+    }
+    Some(normalize_path(root).to_string_lossy().to_string())
+}
+
+fn push_optional_arg(args: &mut Vec<String>, flag: &str, value: Option<String>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        args.push(flag.to_string());
+        args.push(value);
+    }
+}
+
+fn push_optional_path_arg(args: &mut Vec<String>, flag: &str, value: Option<String>, cwd: &str) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        args.push(flag.to_string());
+        args.push(resolve_config_path(&value, cwd));
+    }
+}
+
+fn resolve_config_path(path: &str, cwd: &str) -> String {
+    let path = Path::new(path);
+    let resolved = if path.is_absolute() {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from(cwd).join(path)
+    };
+    normalize_path(resolved).to_string_lossy().to_string()
+}
+
+fn resolve_command_path(command: &str, cwd: &str) -> String {
+    if command.contains('/') || command.starts_with('.') {
+        resolve_config_path(command, cwd)
+    } else {
+        command.to_string()
+    }
+}
+
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push("..");
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+    normalized
 }
 
 fn proxy_arguments(
@@ -646,3 +949,92 @@ fn parse_ipv4(addr: &str) -> Result<u32> {
 }
 
 zed::register_extension!(MidenExtension);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debugger_launch_prefixes_include_explicit_trim_and_package_root() {
+        let config = MidenDebugConfig::from_json(&zed::serde_json::json!({
+            "runtime": "debugger",
+            "programPath": "/workspace/examples/fibonacci/target/miden/debug/fibonacci.masp",
+            "sourcePathPrefixes": ["src"],
+            "trimPathPrefixes": ["/explicit/prefix"],
+            "compilerArgs": ["-Ztrim-path-prefix=/compiler/prefix"],
+            "midencArgs": ["-Z", "trim-path-prefix=midenc-prefix"],
+            "buildArgs": ["--source-path-prefix", "build-prefix"],
+            "cargoMidenArgs": ["--trim-path-prefix=cargo-prefix"],
+            "cwd": "/workspace/examples/fibonacci"
+        }));
+
+        let prefixes = config.source_path_prefixes(
+            "/workspace/examples/fibonacci/target/miden/debug/fibonacci.masp",
+            Some("/workspace/examples/fibonacci"),
+        );
+
+        assert!(prefixes.contains(&"/workspace/examples/fibonacci/src".to_string()));
+        assert!(prefixes.contains(&"/explicit/prefix".to_string()));
+        assert!(prefixes.contains(&"/compiler/prefix".to_string()));
+        assert!(prefixes.contains(&"/workspace/examples/fibonacci/midenc-prefix".to_string()));
+        assert!(prefixes.contains(&"/workspace/examples/fibonacci/build-prefix".to_string()));
+        assert!(prefixes.contains(&"/workspace/examples/fibonacci/cargo-prefix".to_string()));
+        assert!(prefixes.contains(&"/workspace/examples/fibonacci".to_string()));
+    }
+
+    #[test]
+    fn inferred_package_root_requires_target_miden_layout() {
+        assert_eq!(
+            infer_cargo_miden_package_root(
+                "/workspace/examples/fibonacci/target/miden/debug/fibonacci.masp",
+            ),
+            Some("/workspace/examples/fibonacci".to_string()),
+        );
+        assert_eq!(infer_cargo_miden_package_root("/tmp/fibonacci.masp"), None);
+    }
+
+    #[test]
+    fn resolves_debugger_paths_relative_to_launch_cwd() {
+        let cwd = resolve_config_path("examples/fibonacci", "/workspace/compiler");
+
+        assert_eq!(cwd, "/workspace/compiler/examples/fibonacci");
+        assert_eq!(
+            resolve_config_path("target/miden/debug/fibonacci.masp", &cwd),
+            "/workspace/compiler/examples/fibonacci/target/miden/debug/fibonacci.masp"
+        );
+        assert_eq!(
+            resolve_command_path("../../../miden-debug/target/debug/miden-debug", &cwd),
+            "/workspace/miden-debug/target/debug/miden-debug"
+        );
+        assert_eq!(resolve_command_path("miden-debug", &cwd), "miden-debug");
+        assert_eq!(
+            resolve_config_path("../../target/debug/build/miden-core-lib/out/assets", &cwd,),
+            "/workspace/compiler/target/debug/build/miden-core-lib/out/assets"
+        );
+    }
+
+    #[test]
+    fn unwraps_zed_scenario_config_wrapper() {
+        let wrapper = zed::serde_json::json!({
+            "label": "Debug Fibonacci",
+            "adapter": "miden",
+            "config": {
+                "request": "launch",
+                "runtime": "debugger",
+                "programPath": "target/miden/debug/fibonacci.masp"
+            }
+        });
+
+        let config = debug_config_value(&wrapper);
+        assert_eq!(
+            config
+                .get("request")
+                .and_then(zed::serde_json::Value::as_str),
+            Some("launch")
+        );
+        assert_eq!(
+            MidenDebugConfig::from_json(config).program_path.as_deref(),
+            Some("target/miden/debug/fibonacci.masp")
+        );
+    }
+}

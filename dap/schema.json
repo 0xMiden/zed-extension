@@ -1,14 +1,20 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Miden Debug Configuration",
-  "description": "Configuration for the Miden VM DAP debug adapter exposed by `miden-client exec --start-debug-adapter`.",
+  "description": "Configuration for the Miden VM DAP debug adapter exposed by `miden-client` or `miden-debug`.",
   "type": "object",
   "required": ["request"],
   "properties": {
     "request": {
       "type": "string",
       "enum": ["launch", "attach"],
-      "description": "`launch` spawns `miden-client` and connects; `attach` connects to a server you started yourself."
+      "description": "`launch` spawns a Miden debug backend and connects; `attach` connects to a server you started yourself."
+    },
+    "runtime": {
+      "type": "string",
+      "enum": ["client", "debugger"],
+      "default": "client",
+      "description": "Launch backend. Use `client` for miden-client transaction debugging, or `debugger` for standalone miden-debug sessions."
     },
     "host": {
       "type": "string",
@@ -24,12 +30,21 @@
     },
     "scriptPath": {
       "type": "string",
-      "description": "Absolute path to the `.masm` script to debug (launch only)."
+      "description": "Path to the transaction `.masm` script to debug with miden-client. Relative paths are resolved from `cwd`."
+    },
+    "programPath": {
+      "type": "string",
+      "description": "Path to a standalone `.masm` source file or compiled `.masp` package to debug with miden-debug. Relative paths are resolved from `cwd`."
     },
     "midenClientPath": {
       "type": "string",
       "default": "miden-client",
-      "description": "Path to the `miden-client` binary (launch only). When omitted, `miden-client` is resolved from `$PATH`."
+      "description": "Path to the `miden-client` binary for `runtime: \"client\"`. When omitted, `miden-client` is resolved from `$PATH`."
+    },
+    "midenDebugPath": {
+      "type": "string",
+      "default": "miden-debug",
+      "description": "Path to the `miden-debug` binary for `runtime: \"debugger\"`. When omitted, `miden-debug` is resolved from `$PATH`."
     },
     "pythonPath": {
       "type": "string",
@@ -38,17 +53,99 @@
     },
     "accountId": {
       "type": "string",
-      "description": "Account ID for execution (launch only, optional)."
+      "description": "Account ID for miden-client transaction execution (optional)."
+    },
+    "inputsPath": {
+      "type": "string",
+      "description": "Path to a miden-debug inputs TOML file for standalone debugger launches."
+    },
+    "entrypoint": {
+      "type": "string",
+      "description": "Entrypoint to call when programPath points at a library package."
+    },
+    "programArgs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Operand stack arguments for standalone debugger launches."
+    },
+    "sysroot": {
+      "type": "string",
+      "description": "Miden sysroot for standalone debugger launches."
+    },
+    "searchPath": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Additional library search paths for standalone debugger launches."
+    },
+    "linkLibraries": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Libraries to pass to miden-debug with --link-library."
+    },
+    "sourcePathPrefixes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Explicit source path prefixes used to map paths produced by the compiler's -Ztrim-path-prefix option."
+    },
+    "trimPathPrefixes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Compiler -Ztrim-path-prefix values. The extension forwards these as source path prefixes to miden-debug."
+    },
+    "compilerArgs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Compiler arguments to scan for -Ztrim-path-prefix values when launching miden-debug."
+    },
+    "midencArgs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Alias for compiler arguments to scan for -Ztrim-path-prefix values."
+    },
+    "buildArgs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Alias for build arguments to scan for -Ztrim-path-prefix values."
+    },
+    "cargoMidenArgs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Alias for cargo-miden arguments to scan for -Ztrim-path-prefix values."
     },
     "cwd": {
       "type": "string",
-      "description": "Working directory (must be an initialized miden-client directory; launch only). Defaults to the worktree root."
+      "description": "Working directory for the launched debug backend. Relative paths are resolved from the worktree root. Defaults to the worktree root."
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "request": { "const": "launch" } } },
+      "if": {
+        "required": ["request", "runtime"],
+        "properties": {
+          "request": { "const": "launch" },
+          "runtime": { "const": "client" }
+        }
+      },
       "then": { "required": ["scriptPath"] }
+    },
+    {
+      "if": {
+        "required": ["request", "runtime"],
+        "properties": {
+          "request": { "const": "launch" },
+          "runtime": { "const": "debugger" }
+        }
+      },
+      "then": { "required": ["programPath"] }
     }
   ]
 }
